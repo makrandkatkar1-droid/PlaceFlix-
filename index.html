@@ -767,7 +767,9 @@ const fromRow = r => r && ({
   submittedAt:r.submitted_at ? Date.parse(r.submitted_at) : null,
   autoSubmitted:r.auto_submitted, score:r.score, total:r.total, percent:r.percent,
   answers:r.answers, marks:r.marks, breakdown:r.breakdown,
-  released:r.released, releasedAt:r.released_at ? Date.parse(r.released_at) : null
+  released:r.released, releasedAt:r.released_at ? Date.parse(r.released_at) : null,
+  tabSwitches:r.tab_switches || 0,
+  lastTabSwitchAt:r.last_tab_switch_at ? Date.parse(r.last_tab_switch_at) : null
 });
 const siteFromRow = r => r && ({
   tagline:r.tagline || DEFAULT_SITE.tagline,
@@ -833,6 +835,11 @@ const DB = {
     const {data, error} = await sb.rpc("submit_test", {p_id:id, p_answers:answers, p_auto:!!auto});
     if(error) throw error;
     return data;
+  },
+  async logTabSwitch(id){
+    if(!ONLINE) return;
+    try{ await sb.rpc("log_tab_switch", {p_id:id}); }
+    catch(err){ console.error(err); }
   },
   async status(id, email){
     if(!ONLINE){
@@ -1376,6 +1383,27 @@ function renderTest(){
   paintQ(); paintPalette();
   $("#submitBtn").onclick = ()=> askSubmit(false);
 
+  if(!T.watcherOn){
+    T.watcherOn = true;
+    let lastFlag = 0;
+    const flag = ()=>{
+      const now = Date.now();
+      if(now - lastFlag < 800) return; // avoid double-count when blur+visibilitychange fire together
+      lastFlag = now;
+      T.tabSwitches = (T.tabSwitches || 0) + 1;
+      DB.logTabSwitch(state.me);
+      toast("Leaving this tab during the test has been recorded.", true);
+    };
+    const onVis  = ()=>{ if(document.hidden) flag(); };
+    const onBlur = ()=> flag();
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("blur", onBlur);
+    T.cleanup = ()=>{
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("blur", onBlur);
+    };
+  }
+
   clearInterval(T.t);
   const tick = ()=>{
     T.left--;
@@ -1440,6 +1468,7 @@ async function askSubmit(auto){
 
 async function submitTest(auto){
   clearInterval(state.test.t);
+  if(state.test.cleanup) state.test.cleanup();
   const picks = state.test.picks;
   try{
     await DB.submit(state.me, picks, auto);
@@ -1597,12 +1626,38 @@ function appBar(){
 /* =========================================================================
    ADMIN
    ========================================================================= */
+let adminLiveChannel = null;
+function watchAdminLive(){
+  if(!ONLINE || adminLiveChannel) return;
+  adminLiveChannel = sb.channel("admin-live")
+    .on("postgres_changes", {event:"INSERT", schema:"public", table:"applicants"}, payload=>{
+      const row = fromRow(payload.new);
+      if(!state.apps.some(a=>a.id === row.id)) state.apps.unshift(row);
+      toast(`${row.fullName} just registered.`);
+      if(state.admin && state.adminTab === "applicants") tabApplicants();
+    })
+    .on("postgres_changes", {event:"UPDATE", schema:"public", table:"applicants"}, payload=>{
+      const before = payload.old || {}, row = fromRow(payload.new);
+      const i = state.apps.findIndex(a=>a.id === row.id);
+      if(i > -1) state.apps[i] = row; else state.apps.unshift(row);
+
+      if(before.status !== "submitted" && payload.new.status === "submitted"){
+        toast(`${row.fullName} submitted — scored ${row.score}/${row.total} (${row.percent}%).`);
+      } else if((row.tabSwitches || 0) > (before.tab_switches || 0)){
+        toast(`⚠ ${row.fullName} left the test tab (${row.tabSwitches}×).`, true);
+      }
+      if(state.admin && state.adminTab === "applicants") tabApplicants();
+    })
+    .subscribe();
+}
+
 async function renderAdmin(){
   if(!state.admin) return paintLogin();
   if(ONLINE && !state.adminLoaded){
     try{ await DB.loadAdmin(); state.adminLoaded = true; }
     catch(err){ console.error(err); toast("Couldn't load applicant data.", true); }
   }
+  watchAdminLive();
   app().innerHTML = `
   <header class="topbar solid"><div class="wrap row">
     <a class="brand" href="#/"><img src="${ASSETS.logoInk}" alt="Placeflix"></a>
@@ -1756,7 +1811,7 @@ function rowHtml(a){
     <td style="font-size:13px;white-space:nowrap">${fmtD(a.registeredAt)}</td>
     <td>${done ? `<strong style="font-family:var(--mono)">${a.score}/${a.total}</strong>
         <span style="color:var(--muted);font-size:12.5px"> · ${a.percent}%</span>` : "—"}</td>
-    <td>${pill}</td>
+    <td>${pill}${a.tabSwitches ? `<span class="pill" style="background:#FDECEC;color:#B23A2E;margin-left:6px" title="Left the test tab ${a.tabSwitches} time(s)">⚠ ${a.tabSwitches}</span>` : ""}</td>
     <td style="white-space:nowrap">
       ${done ? `<button class="btn ${a.released?"ghost":"primary"} sm" data-act="${a.released?"hold":"release"}" data-id="${a.id}">${a.released?"Hold":"Release"}</button>` : ""}
       <button class="btn ghost sm" data-act="open" data-id="${a.id}">${open?"Hide":"View"}</button>
@@ -1781,6 +1836,7 @@ function detailHtml(a){
     ${kv("Test submitted", a.submittedAt ? fmt(a.submittedAt) + (a.autoSubmitted ? " (auto)" : "") : "Not attempted")}
     ${kv("Score", a.score===null ? "—" : `${a.score}/${a.total} · ${a.percent}% · ${a.percent>=state.site.passMark?"above cut-off":"below cut-off"}`)}
     ${kv("Result released", a.released ? fmt(a.releasedAt) : "No")}
+    ${kv("Left test tab", a.tabSwitches ? `${a.tabSwitches} time${a.tabSwitches>1?"s":""} · last at ${fmt(a.lastTabSwitchAt)}` : "No")}
     ${ans}
     <div style="grid-column:1/-1;display:flex;gap:9px;flex-wrap:wrap">
       <button class="btn ghost sm" data-act="del" data-id="${a.id}" style="color:var(--danger);border-color:#F2CDC5">Delete applicant</button>
