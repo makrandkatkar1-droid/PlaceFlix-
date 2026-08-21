@@ -902,7 +902,7 @@ const DB = {
   }
 };
 
-const state = { site:{...DEFAULT_SITE}, apps:[], adminPaper:null, adminLoaded:false, testName:"", me:null, admin:false, test:null, adminTab:"applicants", filter:"all", search:"", open:null };
+const state = { site:{...DEFAULT_SITE}, apps:[], adminPaper:null, adminLoaded:false, testName:"", me:null, admin:false, test:null, adminTab:"applicants", filter:"all", search:"", open:null, alerts:[], bellOpen:false };
 
 /* ---------- tiny helpers ---------- */
 const $  = (s, r=document) => r.querySelector(s);
@@ -1633,6 +1633,29 @@ function appBar(){
 /* =========================================================================
    ADMIN
    ========================================================================= */
+function pushAlert(msg, urgent){
+  state.alerts.unshift({id:"al"+Date.now()+Math.random(), msg, urgent:!!urgent, time:Date.now(), read:false});
+  state.alerts = state.alerts.slice(0, 30);
+  renderBell();
+}
+function renderBell(){
+  const badge = $("#bellCount");
+  if(!badge) return; // admin header not on screen right now
+  const n = state.alerts.filter(a=>!a.read).length;
+  badge.style.display = n ? "flex" : "none";
+  badge.textContent = n > 9 ? "9+" : n;
+  const panel = $("#bellPanel");
+  if(panel) panel.innerHTML = bellPanelHtml();
+}
+function bellPanelHtml(){
+  if(!state.alerts.length) return `<div style="padding:16px;font-size:13px;color:var(--muted)">No alerts yet.</div>`;
+  return state.alerts.map(a=>`
+    <div style="padding:11px 14px;border-bottom:1px solid var(--line-2);font-size:13px;${a.read?"":"background:#FFF7ED"}">
+      <div>${a.urgent ? "⚠ " : ""}${esc(a.msg)}</div>
+      <div style="color:var(--muted);font-size:11.5px;margin-top:3px">${fmt(a.time)}</div>
+    </div>`).join("");
+}
+
 let adminLiveChannel = null;
 function watchAdminLive(){
   if(!ONLINE || adminLiveChannel) return;
@@ -1641,6 +1664,7 @@ function watchAdminLive(){
       const row = fromRow(payload.new);
       if(!state.apps.some(a=>a.id === row.id)) state.apps.unshift(row);
       toast(`${row.fullName} just registered.`);
+      pushAlert(`${row.fullName} registered.`);
       if(state.admin && state.adminTab === "applicants") tabApplicants();
     })
     .on("postgres_changes", {event:"UPDATE", schema:"public", table:"applicants"}, payload=>{
@@ -1650,8 +1674,10 @@ function watchAdminLive(){
 
       if(before.status !== "submitted" && payload.new.status === "submitted"){
         toast(`${row.fullName} submitted — scored ${row.score}/${row.total} (${row.percent}%).`);
+        pushAlert(`${row.fullName} submitted — scored ${row.score}/${row.total} (${row.percent}%).`);
       } else if((row.tabSwitches || 0) > (before.tab_switches || 0)){
         toast(`⚠ ${row.fullName} left the test tab (${row.tabSwitches}×).`, true);
+        pushAlert(`${row.fullName} left the test tab (${row.tabSwitches}× so far).`, true);
       }
       if(state.admin && state.adminTab === "applicants") tabApplicants();
     })
@@ -1669,6 +1695,16 @@ async function renderAdmin(){
   <header class="topbar solid"><div class="wrap row">
     <a class="brand" href="#/"><img src="${ASSETS.logoInk}" alt="Placeflix"></a>
     <span class="tag" style="margin-right:auto">Admin console</span>
+    <div style="position:relative">
+      <button class="btn ghost sm" id="bellBtn" style="position:relative">🔔
+        <span id="bellCount" style="display:none;position:absolute;top:-6px;right:-6px;background:#B23A2E;color:#fff;
+          font-size:10.5px;font-weight:700;min-width:17px;height:17px;border-radius:99px;align-items:center;
+          justify-content:center;padding:0 4px"></span>
+      </button>
+      <div id="bellPanel" style="display:${state.bellOpen?"block":"none"};position:absolute;right:0;top:calc(100% + 8px);
+        width:300px;max-height:360px;overflow:auto;background:#fff;border:1px solid var(--line-2);border-radius:10px;
+        box-shadow:0 10px 30px rgba(0,0,0,.12);z-index:50"></div>
+    </div>
     <a class="btn ghost sm" href="#/">View site</a>
     <button class="btn sm" id="outBtn">Sign out</button>
   </div></header>
@@ -1679,6 +1715,14 @@ async function renderAdmin(){
     </div>
     <div id="tabHost"></div>
   </div></main>`;
+  $("#bellBtn").onclick = e=>{
+    e.stopPropagation();
+    state.bellOpen = !state.bellOpen;
+    $("#bellPanel").style.display = state.bellOpen ? "block" : "none";
+    if(state.bellOpen){ state.alerts.forEach(a=> a.read = true); renderBell(); }
+  };
+  document.addEventListener("click", ()=>{ if(state.bellOpen){ state.bellOpen = false; const p = $("#bellPanel"); if(p) p.style.display = "none"; } }, {once:true});
+  renderBell();
   $("#outBtn").onclick = async ()=>{
     await DB.signOut();
     state.admin = false; state.adminLoaded = false; state.apps = []; state.adminPaper = null;
