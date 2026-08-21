@@ -823,10 +823,10 @@ const DB = {
   async submit(id, answers, auto){
     if(!ONLINE){
       const me = state.apps.find(a=>a.id === id);
-      let score = 0;
-      answers.forEach((v,k)=>{ if(v === paper()[k].a) score++; });
+      let score = 0, total = 0;
+      answers.forEach((v,k)=>{ const mk = paper()[k].m || 1; total += mk; if(v === paper()[k].a) score += mk; });
       Object.assign(me, {answers, key:paper().map(q=>({s:q.s, a:q.a})), score,
-        total:paper().length, percent:Math.round(score/paper().length*100),
+        total, percent:Math.round(score/total*100),
         marks:answers.map((v,k)=> v === paper()[k].a),
         status:"submitted", submittedAt:Date.now(), autoSubmitted:!!auto});
       await Store.set(KEY_APPS, state.apps);
@@ -872,7 +872,7 @@ const DB = {
     if(e1) throw e1;
     if(e2) throw e2;
     state.apps = (rows || []).map(fromRow);
-    state.adminPaper = (qs || []).map(q=>({s:q.section, q:q.prompt, o:q.options, a:q.answer}));
+    state.adminPaper = (qs || []).map(q=>({s:q.section, q:q.prompt, o:q.options, a:q.answer, m:q.marks || 1}));
   },
   async patchApplicant(id, patch){
     if(!ONLINE) return Store.set(KEY_APPS, state.apps);
@@ -892,7 +892,7 @@ const DB = {
     const del = await sb.from("questions").delete().gte("id", 0);
     if(del.error) throw del.error;
     if(list.length){
-      const rows = list.map((q,i)=>({ord:i, section:q.s, prompt:q.q, options:q.o, answer:q.a}));
+      const rows = list.map((q,i)=>({ord:i, section:q.s, prompt:q.q, options:q.o, answer:q.a, marks:q.m || 1}));
       const ins = await sb.from("questions").insert(rows);
       if(ins.error) throw ins.error;
     }
@@ -1423,6 +1423,7 @@ function paintQ(){
       <div class="qmeta">
         <span class="tag">${q.s}</span>
         <span class="tag grey">Question ${T.i+1} of ${paper().length}</span>
+        <span class="tag grey">${q.m||1} mark${(q.m||1)>1?"s":""}</span>
       </div>
       <p class="qtext">${esc(q.q)}</p>
       <div class="opts">
@@ -1903,12 +1904,12 @@ async function copyText(t){
 const TEMPLATE_TEXT = [
   "Section: Aptitude",
   "Q1. A trader buys shares worth Rs 12,000 and sells them for Rs 13,800. What is the profit percentage?",
-  "A) 12%", "B) 15%", "C) 18%", "D) 20%", "Answer: B", "",
+  "A) 12%", "B) 15%", "C) 18%", "D) 20%", "Answer: B", "Marks: 1", "",
   "Q2. If 8 analysts finish a report in 15 days, how many days will 10 analysts take?",
-  "A) 10 days", "B) 12 days", "C) 13 days", "D) 18 days", "Answer: B", "",
+  "A) 10 days", "B) 12 days", "C) 13 days", "D) 18 days", "Answer: B", "Marks: 2", "",
   "Section: Markets",
   "Q3. Which body regulates the securities market in India?",
-  "A) RBI", "B) SEBI", "C) IRDAI", "D) NABARD", "Answer: B"
+  "A) RBI", "B) SEBI", "C) IRDAI", "D) NABARD", "Answer: B", "Marks: 1"
 ].join("\n");
 
 function exportCsv(){
@@ -2131,7 +2132,10 @@ function parseQuestions(lines){
   let cur = null, section = "General";
   const flush = ()=>{
     if(!cur) return;
-    if(cur.o.length >= 2 && cur.a !== null && cur.a < cur.o.length) out.push(cur);
+    if(cur.o.length >= 2 && cur.a !== null && cur.a < cur.o.length){
+      if(!cur.m || cur.m < 1) cur.m = 1;
+      out.push(cur);
+    }
     else if(cur.q) skipped.push(cur.q);
     cur = null;
   };
@@ -2141,6 +2145,11 @@ function parseQuestions(lines){
     let m;
 
     if(m = line.match(/^(section|topic|category|subject)\s*[:\-–]\s*(.+)$/i)){ section = m[2].trim().slice(0,28); continue; }
+
+    if(m = line.match(/^(?:marks?|points?|weight(?:age)?)\s*[:\-–=]\s*(\d+(?:\.\d+)?)\s*$/i)){
+      if(cur) cur.m = Math.max(1, Math.round(+m[1]));
+      continue;
+    }
 
     if(m = line.match(/^(?:correct\s*)?(?:ans|answer|key)(?:\s*key)?\s*[:\-–=]?\s*\(?([a-zA-Z]|\d{1,2})\)?[\.\s]*$/i)){
       if(cur){
@@ -2271,6 +2280,7 @@ function tabQuestions(){
             <div class="panel" style="padding:16px 18px;box-shadow:none">
               <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:9px">
                 <span class="tag">${esc(q.s)}</span>
+                <span class="tag grey">${q.m || 1} mark${(q.m||1)>1?"s":""}</span>
                 <strong style="flex:1;font-size:15px">${i+1}. ${esc(q.q)}</strong>
                 <button class="btn ghost sm" data-del="${i}" title="Remove this question"
                   style="color:var(--danger);border-color:#F2CDC5">Remove</button>
@@ -2310,11 +2320,13 @@ A) First option
 B) Second option
 C) Third option
 D) Fourth option
-Answer: B</pre>
+Answer: B
+Marks: 2</pre>
           <p style="margin:10px 0 0;font-size:12.5px">
             <b>Section</b> lines are optional and apply until the next one. Numbering can be
             <span style="font-family:var(--mono)">Q1.</span> or <span style="font-family:var(--mono)">1)</span>.
             Instead of an <b>Answer</b> line you can put <span style="font-family:var(--mono)">*</span> before the correct option.
+            <b>Marks</b> is optional too — leave it out and the question is worth 1 mark.
             Two or more options per question, and no limit on how many questions you add.</p>
         </div>
       </div>
@@ -2379,7 +2391,7 @@ function showParsed(res, source){
         ${skipped.length} skipped for missing options or a missing answer: ${esc(skipped.slice(0,3).join(" · ")).slice(0,140)}…</p>` : ""}
       <div style="max-height:280px;overflow:auto;margin:16px 0;display:grid;gap:10px">
         ${out.map((q,i)=>`<div style="font-size:14px">
-          <span class="tag grey">${esc(q.s)}</span> <strong>${i+1}. ${esc(q.q)}</strong>
+          <span class="tag grey">${esc(q.s)}</span> <span class="tag grey">${q.m||1} mark${(q.m||1)>1?"s":""}</span> <strong>${i+1}. ${esc(q.q)}</strong>
           <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:7px">
             ${q.o.map((o,k)=>`<span class="ans ${k===q.a?"ok":""}">${LETTER(k)}. ${esc(o)}</span>`).join("")}
           </div></div>`).join("")}
