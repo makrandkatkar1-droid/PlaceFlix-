@@ -1392,7 +1392,13 @@ function renderTest(){
       lastFlag = now;
       T.tabSwitches = (T.tabSwitches || 0) + 1;
       DB.logTabSwitch(state.me);
-      toast("Leaving this tab during the test has been recorded.", true);
+      if(T.tabSwitches >= 3){
+        toast("Test auto-submitted — you left the tab too many times.", true);
+        if(T.cleanup) T.cleanup();
+        submitTest(true);
+      } else {
+        toast(`Warning ${T.tabSwitches} of 2 — leave the tab once more and your test auto-submits.`, true);
+      }
     };
     const onVis  = ()=>{ if(document.hidden) flag(); };
     const onBlur = ()=> flag();
@@ -1419,7 +1425,7 @@ function renderTest(){
 function paintQ(){
   const T = state.test, q = paper()[T.i];
   $("#qhost").innerHTML = `
-    <div class="qcard">
+    <div class="qcard" oncontextmenu="return false" onselectstart="return false" style="user-select:none;-webkit-user-select:none">
       <div class="qmeta">
         <span class="tag">${q.s}</span>
         <span class="tag grey">Question ${T.i+1} of ${paper().length}</span>
