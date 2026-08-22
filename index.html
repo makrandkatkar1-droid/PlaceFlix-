@@ -1355,7 +1355,7 @@ function renderTest(){
   if(!state.me || !me){ toast("Register first to take the test.", true); go("register"); return; }
   if(me.status === "submitted"){ go("status"); return; }
 
-  if(!state.test) state.test = {i:0, picks:Array(paper().length).fill(null), left:state.site.durationMin*60, t:null};
+  if(!state.test) state.test = {i:0, order:shuffledIndices(paper().length), picks:Array(paper().length).fill(null), left:state.site.durationMin*60, t:null};
   const T = state.test;
 
   app().innerHTML = `
@@ -1422,8 +1422,17 @@ function renderTest(){
   tick(); T.t = setInterval(tick, 1000);
 }
 
+function shuffledIndices(n){
+  const arr = Array.from({length:n}, (_,i)=>i);
+  for(let i = arr.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 function paintQ(){
-  const T = state.test, q = paper()[T.i];
+  const T = state.test, q = paper()[T.order[T.i]];
   $("#qhost").innerHTML = `
     <div class="qcard" oncontextmenu="return false" onselectstart="return false" style="user-select:none;-webkit-user-select:none">
       <div class="qmeta">
@@ -1434,8 +1443,8 @@ function paintQ(){
       <p class="qtext">${esc(q.q)}</p>
       <div class="opts">
         ${q.o.map((o,k)=>`
-          <label class="opt${T.picks[T.i]===k?" sel":""}">
-            <input type="radio" name="opt" value="${k}" ${T.picks[T.i]===k?"checked":""}>
+          <label class="opt${T.picks[T.order[T.i]]===k?" sel":""}">
+            <input type="radio" name="opt" value="${k}" ${T.picks[T.order[T.i]]===k?"checked":""}>
             <span class="k">${LETTER(k)}</span><span>${esc(o)}</span>
           </label>`).join("")}
       </div>
@@ -1446,19 +1455,19 @@ function paintQ(){
       </div>
     </div>`;
   $$("#qhost input[name=opt]").forEach(r=> r.onchange = ()=>{
-    state.test.picks[state.test.i] = +r.value;
+    state.test.picks[state.test.order[state.test.i]] = +r.value;
     paintQ(); paintPalette();
     if(state.test.i < paper().length-1) setTimeout(()=>{ state.test.i++; paintQ(); paintPalette(); }, 190);
   });
   $("#prevBtn").onclick = ()=>{ if(T.i>0){ T.i--; paintQ(); paintPalette(); } };
   $("#nextBtn").onclick = ()=>{ if(T.i<paper().length-1){ T.i++; paintQ(); paintPalette(); } };
-  $("#clearBtn").onclick = ()=>{ T.picks[T.i] = null; paintQ(); paintPalette(); };
+  $("#clearBtn").onclick = ()=>{ T.picks[T.order[T.i]] = null; paintQ(); paintPalette(); };
 }
 
 function paintPalette(){
   const T = state.test;
-  $("#palette").innerHTML = paper().map((_,k)=>
-    `<button class="pal${T.picks[k]!==null?" done":""}${k===T.i?" now":""}" data-k="${k}">${k+1}</button>`).join("");
+  $("#palette").innerHTML = T.order.map((canonIdx,k)=>
+    `<button class="pal${T.picks[canonIdx]!==null?" done":""}${k===T.i?" now":""}" data-k="${k}">${k+1}</button>`).join("");
   $$("#palette .pal").forEach(b=> b.onclick = ()=>{ state.test.i = +b.dataset.k; paintQ(); paintPalette(); });
 }
 
@@ -2177,6 +2186,20 @@ async function docxParagraphs(file){
 /* Turns lines of text into questions. Tolerant of the ways people actually
    type papers: Q1. / 1) / plain, A) B) C) or (a) (b), Answer: B or Ans - 2,
    a * or (correct) marking the right option, optional Section: lines. */
+function shuffleOptions(q){
+  // Fisher–Yates shuffle of the options array, keeping q.a pointed at the
+  // same underlying correct option after reordering. The answer text and
+  // meaning never change — only where it lands in the list.
+  const pairs = q.o.map((text, i)=>({text, correct: i === q.a}));
+  for(let i = pairs.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [pairs[i], pairs[j]] = [pairs[j], pairs[i]];
+  }
+  q.o = pairs.map(p=>p.text);
+  q.a = pairs.findIndex(p=>p.correct);
+  return q;
+}
+
 function parseQuestions(lines){
   const out = [], skipped = [];
   let cur = null, section = "General";
@@ -2184,7 +2207,7 @@ function parseQuestions(lines){
     if(!cur) return;
     if(cur.o.length >= 2 && cur.a !== null && cur.a < cur.o.length){
       if(!cur.m || cur.m < 1) cur.m = 1;
-      out.push(cur);
+      out.push(shuffleOptions(cur));
     }
     else if(cur.q) skipped.push(cur.q);
     cur = null;
